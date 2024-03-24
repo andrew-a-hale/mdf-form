@@ -2,129 +2,155 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"reflect"
+	"log"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-var types []string = []string{"File", "Database"}
+type Styles struct {
+	BorderColour lipgloss.Color
+	InputField   lipgloss.Style
+}
+
+func DefaultStyles() *Styles {
+	s := new(Styles)
+	s.BorderColour = lipgloss.Color("36")
+	s.InputField = lipgloss.NewStyle().
+		BorderForeground(s.BorderColour).
+		BorderStyle(lipgloss.NormalBorder()).
+		Padding(1).
+		Width(80)
+
+	return s
+}
 
 type model struct {
-	data    map[int]textinput.Model
-	step    int
-	stepMax int
-	err     error
+	styles    Styles
+	index     int
+	questions []Question
+	width     int
+	height    int
+	done      bool
 }
 
-type errMsg error
-
-type File struct {
-	Delimiter string
-	Pattern   string
+type Question struct {
+	question string
+	answer   string
+	input    Input
 }
 
-type Database struct {
-	Catalogue string
-	Schema    string
-	Table     string
+func NewQuestion(question string) Question {
+	return Question{question: question}
 }
 
-func NewModel() model {
-	data := make(map[int]textinput.Model)
-	tmpFile := File{}
-	fields := reflect.TypeOf(tmpFile)
+func newShortQuestion(question string) Question {
+	q := NewQuestion(question)
+	field := NewShortAnswerField()
+	q.input = field
 
-	total := 0
-	for i := 0; i < fields.NumField(); i++ {
-		ti := textinput.New()
-		ti.Prompt = fields.Field(i).Name + ": "
-		ti.Placeholder = "placeholder"
-		ti.Focus()
-		ti.Width = 20
-		ti.CharLimit = 150
-		data[total] = ti
-		total++
-	}
+	return q
+}
 
-	tmpDatabase := Database{}
-	fields = reflect.TypeOf(tmpDatabase)
+func newLongQuestion(question string) Question {
+	q := NewQuestion(question)
+	field := NewLongAnswerField()
+	q.input = field
 
-	for i := 0; i < fields.NumField(); i++ {
-		ti := textinput.New()
-		ti.Prompt = fields.Field(i).Name + ": "
-		ti.Placeholder = "placeholder"
-		ti.Focus()
-		ti.Width = 20
-		ti.CharLimit = 150
-		data[total] = ti
-		total++
-	}
+	return q
+}
 
-	m := model{
-		step:    0,
-		data:    data,
-		stepMax: total,
-	}
-
-	return m
+func New(questions []Question) *model {
+	styles := DefaultStyles()
+	return &model{questions: questions, styles: *styles}
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	current := &m.questions[m.index]
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
 	case tea.KeyMsg:
 		switch msg.Type {
+
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
+
 		case tea.KeyEnter:
-			if m.step < m.stepMax {
-				m.step++
-			}
+			current.answer = current.input.Value()
+			log.Printf(
+				"question: %s, answer: %s\n",
+				current.question,
+				current.answer,
+			)
+			m.Next()
+			return m, current.input.Blur
 		}
-	case errMsg:
-		m.err = msg
-		return m, nil
 	}
 
-	ti, ok := m.data[m.step]
-	if ok {
-		ti, cmd = ti.Update(msg)
-	}
+	// update model
+	current.input, cmd = current.input.Update(msg)
 
-	m.data[m.step] = ti
 	return m, cmd
 }
 
 func (m model) View() string {
-	var s string
-
-	switch m.step {
-	case m.stepMax:
-		for i := 0; i < m.stepMax; i++ {
-			s += fmt.Sprintf("%s\n", m.data[i].Value())
+	current := m.questions[m.index]
+	if m.done {
+		var output string
+		for _, q := range m.questions {
+			output += fmt.Sprintf("%s: %s\n", q.question, q.answer)
 		}
-	default:
-		s = fmt.Sprintf(
-			"%s\n\n",
-			m.data[m.step].View(),
-		)
+		return output
 	}
 
-	s += "(esc or ctrl+c to quit)"
-	return s
+	if m.width == 0 {
+		return "loading..."
+	}
+
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		lipgloss.JoinVertical(
+			lipgloss.Center,
+			m.questions[m.index].question,
+			m.styles.InputField.Render(current.input.View()),
+		),
+	)
+}
+
+func (m *model) Next() {
+	if m.index < len(m.questions)-1 {
+		m.index++
+	} else {
+		m.index = 0
+		m.done = true
+	}
 }
 
 func main() {
-	_, err := tea.NewProgram(NewModel()).Run()
+	f, err := tea.LogToFile("debug.log", "debug")
 	if err != nil {
-		fmt.Println("Error:", err)
-		os.Exit(1)
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	questions := []Question{
+		newShortQuestion("first question"),
+		newLongQuestion("second question"),
+	}
+	p := tea.NewProgram(New(questions), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		log.Fatal(err)
 	}
 }
